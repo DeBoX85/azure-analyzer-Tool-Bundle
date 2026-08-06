@@ -70,6 +70,7 @@ function Invoke-AzureAnalyzer {
         [string[]] $IncludeTools,
         [string[]] $ExcludeTools,
         [switch] $NonInteractive,
+        [switch] $InteractiveReport,
         [switch] $SkipPrereqCheck,
         [switch] $InstallMissingModules,
         [string] $InstallConfigPath,
