@@ -117,3 +117,97 @@
 - All meaningful changes require team consensus
 - Document architectural decisions here
 - Keep history focused on work, decisions focused on direction
+
+
+## 2026-08-06: CI Restoration, Haflidi Completion, and Platform Learnings
+
+### 2026-08-06 - Fork-PR guards for privileged CI workflows
+
+**Context:** Three CI workflows failed on every external-contributor fork PR due to GitHub's fork-PR permission model. Fork PRs receive a read-only GITHUB_TOKEN and all repository secrets resolve to empty strings.
+**Decision:** Apply job-level if: fork guards to pr-auto-rebase.yml, issue-resolution-verify.yml, and pr-auto-rerun-on-push.yml. For pull_request-only workflows: if: github.event.pull_request.head.repo.full_name == github.repository. For mixed-trigger workflows: negative-short-circuit pattern passing non-PR events unconditionally. continue-on-error: true was explicitly rejected — it papers over hard failures and hides real errors.
+**Consequences:** PR #1253 merged. Issues #1240, #1242, #1243, #1249 closed.
+**Author:** Forge
+
+### 2026-08-06 - Runspace pool provisioning approach (#1225)
+
+**Context:** Worker runspaces created ad-hoc (ForEach-Object -Parallel) do not reliably inherit modules loaded by the orchestrator, causing silent finding drops (#1218). The serial fallback (AZURE_ANALYZER_MAX_PARALLEL=1) was the guaranteed-correct workaround at the cost of parallelism.
+**Decision:** Opt-in parallel via InitialSessionState StartupScripts. New-WorkerSessionState builds a default session and adds every modules/shared/*.ps1 via StartupScripts. Activation: -UseRunspacePool switch or $env:AZURE_ANALYZER_USE_RUNSPACE_POOL=1. Serial remains the default. Flip to parallel default when: (1) one production tenant scan succeeds with the pool at scale, (2) Windows CI green for 5+ consecutive runs with pool active, (3) no finding-loss regressions.
+**Consequences:** PR #1255 merged. Issue #1225 closed. modules/shared/WorkerPool.ps1 shipped.
+**Author:** Forge
+
+### 2026-08-06 - Interactive report design (#1230)
+
+**Context:** Issue #1230 requested an interactive HTML report layer with FP-marking and suppression export.
+**Decision:** Opt-in via -Interactive / -InteractiveReport switch; static output is byte-identical when absent (enforced by 	ests/samples/SampleDrift.Tests.ps1). FindingKey (16-hex SHA-256) is the only client-side identity, ensuring export round-trips directly into Import-SuppressionList. Export format: {"key":"...","reason":"..."} per entry with schemaVersion: "1.0". FP filtering via CSS classes on html.fp-hide/html.fp-only (toggles document.documentElement.classList). data-fk attribute holds the FindingKey as the hook for #1231.
+**Consequences:** PR #1252 merged. Issue #1230 closed. docs/consumer/interactive-report.md added.
+**Author:** Sentinel
+
+### 2026-08-06 - Interactive report payload shrink (#1231)
+
+**Context:** Issue #1231 requested shrinking the interactive HTML report payload via stable hashed IDs and string deduplication.
+**Decision:** Five intern tables (rule, entity, subscription, tool, status) replace verbatim string attributes with integer indices on each TR row. window._T lookup table emitted once before the IIFE. Post-generation regex patches the IIFE (.dataset.rule → _dv(r,'rule')) only when -Interactive is true. Virtual DOM paging deferred — string interning delivers the primary saving. data-severity and data-fk intentionally not interned (negligible savings / inherently unique).
+**Consequences:** PR #1257 in flight at session end. Issue #1231 targeted.
+**Author:** Sentinel
+
+### 2026-08-06 - Batch tool pin bumps into one PR per run
+
+**Context:** 	ools/Update-ToolPins.ps1 was hardcoded to open one PR per tool, producing 48 open PRs collapsing to 16 unique tools. git merge-tree empirically proved adjacent rows in the generated docs/reference/tool-catalog-contributor.md hard-conflict; conflicted PRs run zero pull_request workflows.
+**Decision:** Refactor Update-ToolPins.ps1 to produce one batched PR per run on chore/bump-tool-pins-<yyyyMMdd>. Phase 1: collect all pin changes. Phase 2: single branch/commit/PR. All three doc generators run once after all manifest writes. 31 duplicate PRs and 16 superseded per-tool PRs were closed.
+**Consequences:** PR #1254 merged. Old per-tool branch name pattern retired.
+**Author:** Forge
+
+### 2026-08-06 - Zero registered self-hosted runners was the true CI root cause
+
+**Context:** gh api repos/martinopedal/azure-analyzer/actions/runners returned 	otal_count: 0 while 24 of 26 workflows targeted [self-hosted, public-linux]. This is a user account, not an org; repo-level runners are the only possible source. The repo is public so GitHub-hosted runners are free and unlimited.
+**Decision:** Migrate all 26 workflow files to GitHub-hosted runners (PR #1256, merged 697652ef). Acceptance gate going forward: Select-String -Path "C:\git\azure-analyzer\.github\workflows\*.yml" -Pattern "self-hosted|public-linux|public-win" MUST return nothing. Never reintroduce self-hosted runner references without first verifying active runners exist via gh api repos/.../actions/runners.
+**Consequences:** All 47 queued workflow runs unblocked. Three blocked squad PRs (#1252, #1254, #1255) could merge.
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Tool-pin PRs are now batched, not one-per-tool
+
+**Context:** Per root cause analysis (see batch tool pin decision above). git merge-tree proved: rows within 1 line of each other hard-conflict; gap >= 2 merges clean. A conflicted PR runs zero pull_request workflows, making it a permanently dead PR.
+**Decision:** Generator rewritten in PR #1254 to emit a single batched PR per run. 31 duplicate PRs and 16 superseded per-tool PRs were closed. The chore/bump- prefix is preserved for closes-link-required.yml exemption.
+**Status:** Active — Update-ToolPins.ps1 is the authoritative implementation.
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Closes #N does NOT fire when added to a PR body after merge
+
+**Context:** PR #1250 contained Closes #1173 and merged cleanly, yet #1173 stayed OPEN because the keyword was added post-merge. GitHub only processes Closes keywords present at merge time.
+**Decision:** RULE: after every merge, explicitly verify the linked issue closed with gh issue view <n> --json state. Never assume a Closes keyword retroactively applied.
+**Status:** Active
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Issues can land with zero labels, making them invisible to Ralph
+
+**Context:** Issues #1225, #1229, and #1230 arrived with no labels despite uto-label-issues being configured to add squad on open. Ralph's --label squad scan silently skipped them. Open question: why did uto-label-issues not fire?
+**Decision:** Workaround: gh issue edit <n> --add-label squad. Note: gh pr edit --add-label fails on ead:org scope error; issue edit works. Investigate uto-label-issues trigger failures separately.
+**Status:** Active (root cause unresolved)
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Set-Location does not change [Environment]::CurrentDirectory
+
+**Context:** .NET APIs ([IO.File]::ReadAllText/WriteAllText, Select-String -Path) resolve relative paths against the PROCESS working directory, not the PowerShell location set by Set-Location. This caused ~5 rounds of phantom inconsistency, silently wrote conflict fixes into the wrong worktree, and truncated Invoke-AzureAnalyzer.ps1 and New-HtmlReport.ps1 to 1 line each (repaired via git checkout --).
+**Decision:** MANDATORY: always use absolute paths with [IO.File] and Select-String -Path. All Scribe-class file operations must start with C:\git\azure-analyzer\.
+**Status:** Active — enforced as squad invariant
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - CHANGELOG.md is the universal merge-conflict point
+
+**Context:** Every feature PR inserts a bullet immediately after ### Added or ### Fixed, guaranteeing an adjacent-insert conflict against any other merged PR.
+**Decision:** Resolution recipe: read into System.Collections.Generic.List[string], verify marker layout by index, build second list with .Add([string]\) per element, then RemoveRange/InsertRange. WARNING: passing @(...) directly to InsertRange throws because System.Object[] will not convert to IEnumerable[string]. CRITICAL: CHANGELOG.md line ~529 contains a literal <<<<<<< ours as documented prose — never blanket-strip conflict markers; match (?m)^<<<<<<< HEAD|^>>>>>>>  specifically.
+**Status:** Active
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Platform model catalog changed; fallback chains stale
+
+**Context:** claude-sonnet-4.5 and claude-haiku-4.5 no longer exist and spawns against them fail hard. gemini-3.6-flash failed silently for Scribe-class work — returned an empty turn and wrote zero files (confirmed by filesystem check).
+**Decision:** Use claude-sonnet-4.6 for code work (4 successful agents this session). Do not use gemini-3.6-flash for file-writing agents. Update squad fallback chains to remove claude-sonnet-4.5 and claude-haiku-4.5. Frontier Fallback Chain: claude-opus-4.7 → claude-opus-4.6-1m → gpt-5.4 → gpt-5.3-codex → goldeneye.
+**Status:** Active — fallback chains require update
+**Author:** Squad (Coordinator)
+
+### 2026-08-06 - Path-filtered required check reporting equired=[] is expected
+
+**Context:** Analyze (actions) (CodeQL, language: [actions]) only runs when .github/workflows/** changes. Pure-PowerShell PRs legitimately show 8 checks instead of 25-26 and report no required check. Branch protection treats a path-filtered skip as satisfied.
+**Decision:** Do NOT block a merge on this. Related: CI rollup must GROUP BY check name and take the newest per name — GET /commits/{sha}/check-runs returns superseded runs too; a cancelled-then-rerun check appears twice and naive counting reports phantom failures.
+**Status:** Active
+**Author:** Squad (Coordinator)
